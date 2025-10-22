@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Filter } from 'lucide-react';
+import { Download, Filter, FileText } from 'lucide-react';
+import ExcelJS from 'exceljs';
+import { saveAs } from 'file-saver';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 const Report = ({ 
   students,
@@ -69,8 +73,217 @@ const Report = ({
     setSelectedSemestersFilter([]);
   };
   
-  const exportToExcel = () => {
-    alert('Excel export feature coming soon!');
+  const exportToExcel = async () => {
+    if (!selectedSubjectForReport) {
+      alert('Please select a subject first');
+      return;
+    }
+
+    const data = generateReportData();
+    
+    if (data.length === 0) {
+      alert('No data to export');
+      return;
+    }
+
+    // Create workbook
+    const workbook = new ExcelJS.Workbook();
+    const subject = subjects.find(s => s._id === selectedSubjectForReport);
+    const sheetName = (subject?.name || 'Grades').substring(0, 31);
+    const worksheet = workbook.addWorksheet(sheetName);
+
+    // Add title row
+    worksheet.mergeCells('A1', String.fromCharCode(65 + 1 + filteredExamTypesForReport.length) + '1');
+    worksheet.getCell('A1').value = `${subject?.name} - Grade Report`;
+    worksheet.getCell('A1').font = { size: 16, bold: true };
+    worksheet.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
+    worksheet.getRow(1).height = 30;
+
+    // Add date row
+    worksheet.mergeCells('A2', String.fromCharCode(65 + 1 + filteredExamTypesForReport.length) + '2');
+    worksheet.getCell('A2').value = `Generated: ${new Date().toLocaleDateString()}`;
+    worksheet.getCell('A2').font = { size: 10, italic: true };
+    worksheet.getCell('A2').alignment = { horizontal: 'center' };
+
+    // Add headers (row 4)
+    const headers = ['Student Name', 'Grade Level'];
+    filteredExamTypesForReport.forEach(examType => {
+      const semester = semesters.find(s => s._id === examType.semesterId);
+      headers.push(`${semester?.name}-${examType.name}`);
+    });
+
+    const headerRow = worksheet.addRow([]);
+    worksheet.addRow(headers);
+    
+    const headerRowNum = 4;
+    worksheet.getRow(headerRowNum).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    worksheet.getRow(headerRowNum).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF2563EB' } // Blue
+    };
+    worksheet.getRow(headerRowNum).alignment = { horizontal: 'center', vertical: 'middle' };
+    worksheet.getRow(headerRowNum).height = 25;
+
+    // Add data rows
+    data.forEach((row, index) => {
+      const rowData = [row.name, row.grade];
+      filteredExamTypesForReport.forEach(examType => {
+        const semester = semesters.find(s => s._id === examType.semesterId);
+        const key = `${semester?.name || ''}-${examType.name}`;
+        rowData.push(row[key] === '-' ? '' : row[key]);
+      });
+      
+      const excelRow = worksheet.addRow(rowData);
+      
+      // Alternate row colors
+      if (index % 2 === 0) {
+        excelRow.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFF3F4F6' } // Light gray
+        };
+      }
+      
+      // Center align all cells except first column
+      excelRow.eachCell((cell, colNumber) => {
+        if (colNumber === 1) {
+          cell.alignment = { horizontal: 'left', vertical: 'middle' };
+        } else {
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        }
+      });
+    });
+
+    // Set column widths
+    worksheet.getColumn(1).width = 25; // Student Name
+    worksheet.getColumn(2).width = 15; // Grade Level
+    for (let i = 3; i <= headers.length; i++) {
+      worksheet.getColumn(i).width = 18; // Exam columns
+    }
+
+    // Add borders to all cells
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber >= 4) { // Skip title rows
+        row.eachCell((cell) => {
+          cell.border = {
+            top: { style: 'thin' },
+            left: { style: 'thin' },
+            bottom: { style: 'thin' },
+            right: { style: 'thin' }
+          };
+        });
+      }
+    });
+
+    // Generate file
+    const buffer = await workbook.xlsx.writeBuffer();
+    const date = new Date().toISOString().split('T')[0];
+    const filename = `${subject?.name || 'Grades'}_Report_${date}.xlsx`;
+    
+    const blob = new Blob([buffer], { 
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+    });
+    saveAs(blob, filename);
+    
+    alert('Excel file downloaded successfully!');
+  };
+
+  const exportToPDF = () => {
+    if (!selectedSubjectForReport) {
+      alert('Please select a subject first');
+      return;
+    }
+
+    const data = generateReportData();
+    
+    if (data.length === 0) {
+      alert('No data to export');
+      return;
+    }
+
+    // Create PDF
+    const doc = new jsPDF('landscape'); // Landscape for wide tables
+    
+    // Get subject name
+    const subject = subjects.find(s => s._id === selectedSubjectForReport);
+    const subjectName = subject?.name || 'Subject';
+    
+    // Add title
+    doc.setFontSize(18);
+    doc.setFont(undefined, 'bold');
+    doc.text(`${subjectName} - Grade Report`, 14, 15);
+    
+    // Add date
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    const date = new Date().toLocaleDateString();
+    doc.text(`Generated: ${date}`, 14, 22);
+    
+    // Prepare table headers
+    const headers = [['Student Name', 'Grade Level']];
+    filteredExamTypesForReport.forEach(examType => {
+      const semester = semesters.find(s => s._id === examType.semesterId);
+      headers[0].push(`${semester?.name}-${examType.name}`);
+    });
+    
+    // Prepare table data
+    const tableData = data.map(row => {
+      const rowData = [row.name, row.grade];
+      filteredExamTypesForReport.forEach(examType => {
+        const semester = semesters.find(s => s._id === examType.semesterId);
+        const key = `${semester?.name || ''}-${examType.name}`;
+        rowData.push(row[key] === '-' ? '' : row[key]);
+      });
+      return rowData;
+    });
+    
+    // Create table
+    autoTable(doc, {
+      head: headers,
+      body: tableData,
+      startY: 28,
+      theme: 'grid',
+      headStyles: {
+        fillColor: [37, 99, 235], // Blue color
+        textColor: 255,
+        fontStyle: 'bold',
+        halign: 'center'
+      },
+      bodyStyles: {
+        halign: 'center'
+      },
+      columnStyles: {
+        0: { halign: 'left', cellWidth: 40 }, // Student name - left aligned
+        1: { halign: 'center', cellWidth: 25 } // Grade - centered
+      },
+      styles: {
+        fontSize: 9,
+        cellPadding: 3
+      },
+      alternateRowStyles: {
+        fillColor: [245, 245, 245]
+      }
+    });
+    
+    // Add footer with page numbers
+    const pageCount = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8);
+      doc.text(
+        `Page ${i} of ${pageCount}`,
+        doc.internal.pageSize.width / 2,
+        doc.internal.pageSize.height - 10,
+        { align: 'center' }
+      );
+    }
+    
+    // Save PDF
+    const filename = `${subjectName}_Grades_${date.replace(/\//g, '-')}.pdf`;
+    doc.save(filename);
+    
+    alert('PDF file downloaded successfully!');
   };
   
   // Generate report data
@@ -117,6 +330,13 @@ const Report = ({
             className="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 flex items-center gap-2"
           >
             <Filter size={18} /> {showFilterPanel ? 'Hide Filter' : 'Show Filter'}
+          </button>
+          <button
+            onClick={exportToPDF}
+            className="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2"
+            disabled={!selectedSubjectForReport}
+          >
+            <FileText size={18} /> Export PDF
           </button>
           <button
             onClick={exportToExcel}
